@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { useForm } from 'react-hook-form';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useForm, type UseFormRegisterReturn } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/auth-context';
 import { Badge } from '../components/ui/badge';
+import { CategoryBadge } from '../components/ui/category-badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -30,6 +31,8 @@ import {
   tasksControllerRemove,
   tasksControllerUpdate,
 } from '../lib/api-client';
+import type { CategoryDto } from '../lib/api-client/models';
+import { useAllCategories } from '../lib/use-categories';
 import type {
   PaginatedTasksResponseDto,
   TaskDto,
@@ -45,6 +48,7 @@ const taskFormSchema = z.object({
   description: z.string().max(1000, 'Máximo de 1000 caracteres.').optional(),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']),
   dueDate: z.string().optional(),
+  categoryId: z.string().optional(),
 });
 
 type TaskFormValues = z.infer<typeof taskFormSchema>;
@@ -56,7 +60,7 @@ const editTaskFormSchema = taskFormSchema.extend({
 type EditTaskFormValues = z.infer<typeof editTaskFormSchema>;
 
 export function TasksPage() {
-  const { isAdmin } = useAuth();
+  const { user, isAdmin } = useAuth();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -64,6 +68,7 @@ export function TasksPage() {
   const search = searchParams.get('search') || '';
   const statusFilter = searchParams.get('status') || '';
   const priorityFilter = searchParams.get('priority') || '';
+  const categoryFilter = searchParams.get('categoryId') || '';  
   const sortBy = searchParams.get('sortBy') || 'createdAt';
   const sortOrder = (searchParams.get('sortOrder') as 'asc' | 'desc') || 'desc';
 
@@ -86,7 +91,7 @@ export function TasksPage() {
 
   // Fetch Tasks with TanStack Query
   const { data: response, isLoading, isError, refetch } = useQuery({
-    queryKey: ['tasks', { page, search, statusFilter, priorityFilter, sortBy, sortOrder }],
+    queryKey: ['tasks', { page, search, statusFilter, priorityFilter, categoryFilter, sortBy, sortOrder }],
     queryFn: async () => {
       const res = await tasksControllerFindAll({
         page,
@@ -94,6 +99,7 @@ export function TasksPage() {
         ...(search ? { search } : {}),
         ...(statusFilter ? { status: statusFilter as any } : {}),
         ...(priorityFilter ? { priority: priorityFilter as any } : {}),
+        ...(categoryFilter ? { categoryId: categoryFilter } : {}),
         sortBy: sortBy as any,
         sortOrder,
       });
@@ -108,6 +114,10 @@ export function TasksPage() {
   const tasks: TaskDto[] = paginatedData?.data || [];
   const meta = paginatedData?.meta || { page: 1, pageSize: 8, total: 0, totalPages: 1 };
 
+  const { categories } = useAllCategories();
+  const myCategories = categories.filter((c) => c.ownerId === user?.id);
+  const hasActiveFilters = Boolean(search || statusFilter || priorityFilter || categoryFilter);
+
   // Form for Creating
   const {
     register: registerCreate,
@@ -121,6 +131,7 @@ export function TasksPage() {
       description: '',
       priority: 'MEDIUM',
       dueDate: '',
+      categoryId: '',
     },
   });
 
@@ -131,6 +142,7 @@ export function TasksPage() {
         description: data.description || undefined,
         priority: data.priority as any,
         dueDate: data.dueDate ? new Date(data.dueDate).toISOString() : undefined,
+        categoryId: data.categoryId || undefined,
       });
       return res.data;
     },
@@ -143,6 +155,7 @@ export function TasksPage() {
       setIsCreateOpen(false);
       resetCreate();
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
     },
     onError: (err: unknown) => {
       const msg =
@@ -166,6 +179,7 @@ export function TasksPage() {
         priority?: TaskDtoPriority;
         status?: TaskDtoStatus;
         dueDate?: string;
+        categoryId?: string | null;
       };
     }) => {
       const res = await tasksControllerUpdate(id, data as any);
@@ -175,6 +189,7 @@ export function TasksPage() {
       setFeedback({ type: 'success', message: 'Tarefa atualizada com sucesso!' });
       setEditingTask(null);
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
     },
     onError: (err: unknown) => {
       const msg =
@@ -193,6 +208,7 @@ export function TasksPage() {
     onSuccess: () => {
       setFeedback({ type: 'success', message: 'Tarefa removida com sucesso.' });
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
     },
     onError: (err: unknown) => {
       const msg =
@@ -262,7 +278,7 @@ export function TasksPage() {
       {/* Filter and Search Controls */}
       <Card>
         <CardContent className="p-4 space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
             {/* Search */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
@@ -301,6 +317,21 @@ export function TasksPage() {
               <option value="URGENT">Urgente</option>
             </select>
 
+            <select
+              aria-label="Filtrar por categoria"
+              value={categoryFilter}
+              onChange={(e) => updateParams({ categoryId: e.target.value || undefined, page: 1 })}
+              className="flex h-10 w-full rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <option value="">Todas as Categorias</option>
+              <option value="none">Sem categoria</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                  {isAdmin && c.ownerId !== user?.id ? ' (outro usuário)' : ''}
+                </option>
+              ))}
+            </select>
             {/* Sorting */}
             <select
               value={`${sortBy}:${sortOrder}`}
@@ -332,12 +363,12 @@ export function TasksPage() {
         <EmptyState
           title="Nenhuma tarefa encontrada"
           description={
-            search || statusFilter || priorityFilter
+            hasActiveFilters
               ? 'Nenhum registro corresponde aos filtros selecionados.'
               : 'Você ainda não possui tarefas criadas.'
           }
           action={
-            search || statusFilter || priorityFilter ? (
+            hasActiveFilters ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -376,6 +407,16 @@ export function TasksPage() {
                         </div>
                       </div>
 
+                      {task.category && (
+                        <button
+                          type="button"
+                          className="max-w-full"
+                          title={`Ver tarefas da categoria ${task.category.name}`}
+                          onClick={() => updateParams({ categoryId: task.category!.id, page: 1 })}
+                        >
+                          <CategoryBadge name={task.category.name} color={task.category.color} />
+                        </button>
+                      )}
                       {desc && (
                         <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
                           {desc}
@@ -571,6 +612,11 @@ export function TasksPage() {
                 />
               </div>
 
+              <CategorySelect
+                categories={myCategories}
+                registration={registerCreate('categoryId')}
+              />
+
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <Button
                   type="button"
@@ -593,6 +639,7 @@ export function TasksPage() {
       {editingTask && (
         <EditTaskModal
           task={editingTask}
+          categories={categories.filter((c) => c.ownerId === editingTask.ownerId)}
           onClose={() => setEditingTask(null)}
           onSubmit={(data) => {
             setFeedback(null);
@@ -607,13 +654,15 @@ export function TasksPage() {
 
 function EditTaskModal({
   task,
+  categories,
   onClose,
   onSubmit,
   isLoading,
 }: {
   task: TaskDto;
+  categories: CategoryDto[];
   onClose: () => void;
-  onSubmit: (data: EditTaskFormValues) => void;
+  onSubmit: (data: Omit<EditTaskFormValues, 'categoryId'> & { categoryId: string | null }) => void;
   isLoading: boolean;
 }) {
   const isCompleted = task.status === 'COMPLETED';
@@ -632,6 +681,7 @@ function EditTaskModal({
       priority: task.priority as any,
       status: task.status as any,
       dueDate: rawDue,
+      categoryId: task.categoryId ?? '',
     },
   });
 
@@ -669,6 +719,7 @@ function EditTaskModal({
               priority: data.priority,
               status: data.status,
               dueDate: data.dueDate ? new Date(data.dueDate).toISOString() : undefined,
+              categoryId: data.categoryId || null,
             });
           })}
           className="space-y-4"
@@ -733,6 +784,13 @@ function EditTaskModal({
             error={errors.dueDate?.message}
           />
 
+          <CategorySelect
+            categories={categories}
+            registration={register('categoryId')}
+            disabled={isCompleted}
+            currentCategory={task.category}
+          />
+
           <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
             <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Cancelar
@@ -743,6 +801,52 @@ function EditTaskModal({
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+function CategorySelect({
+  categories,
+  registration,
+  disabled,
+  currentCategory,
+}: {
+  categories: CategoryDto[];
+  registration: UseFormRegisterReturn;
+  disabled?: boolean;
+  currentCategory?: { id: string; name: string } | null;
+}) {
+  const options =
+    currentCategory && !categories.some((c) => c.id === currentCategory.id)
+      ? [...categories, { id: currentCategory.id, name: currentCategory.name } as CategoryDto]
+      : categories;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor="task-category" className="text-sm font-medium text-slate-700 dark:text-slate-300">
+        Categoria
+      </label>
+      <select
+        id="task-category"
+        disabled={disabled}
+        {...registration}
+        className="flex h-10 w-full rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <option value="">Sem categoria</option>
+        {options.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      {options.length === 0 && (
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          Nenhuma categoria ainda.{' '}
+          <Link to="/categories" className="text-blue-600 hover:underline dark:text-blue-400">
+            Criar categorias
+          </Link>
+        </span>
+      )}
     </div>
   );
 }
