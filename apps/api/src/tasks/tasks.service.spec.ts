@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CategoriesService } from '../categories/categories.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TaskPriorityEnum, TaskStatusEnum } from './task.dto';
 import { TasksService } from './tasks.service';
@@ -7,6 +8,7 @@ import { TasksService } from './tasks.service';
 describe('TasksService', () => {
   let service: TasksService;
   let prisma: any;
+  let categories: any;
 
   const mockUser = {
     id: 'user-uuid-1',
@@ -51,7 +53,11 @@ describe('TasksService', () => {
         update: vi.fn(),
       },
     };
-    service = new TasksService(prisma as unknown as PrismaService);
+    categories = { assertUsableByOwner: vi.fn().mockResolvedValue(undefined) };
+    service = new TasksService(
+      prisma as unknown as PrismaService,
+      categories as unknown as CategoriesService,
+    );
   });
 
   describe('create', () => {
@@ -226,6 +232,42 @@ describe('TasksService', () => {
       await expect(service.remove(mockOtherUser, mockTask.id)).rejects.toThrow(
         ForbiddenException,
       );
+    });
+  });
+  describe('categories', () => {
+    it('does not create the task when the category belongs to another user', async () => {
+      categories.assertUsableByOwner.mockRejectedValue(new NotFoundException());
+
+      await expect(
+        service.create(mockUser.id, { title: 'Tarefa inválida', categoryId: 'cat-de-outro' }),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.task.create).not.toHaveBeenCalled();
+    });
+
+    it('filters tasks without category when categoryId is "none"', async () => {
+      prisma.task.count.mockResolvedValue(0);
+      prisma.task.findMany.mockResolvedValue([]);
+
+      await service.findAll(mockUser, { page: 1, pageSize: 10, categoryId: 'none' });
+
+      expect(prisma.task.findMany.mock.calls[0][0].where.categoryId).toBeNull();
+    });
+
+    it('validates the category against the task OWNER when an admin edits it', async () => {
+      prisma.task.findFirst.mockResolvedValue(mockTask);
+      prisma.task.update.mockResolvedValue(mockTask);
+
+      await service.update(mockAdmin, mockTask.id, { categoryId: 'cat-uuid-1' });
+
+      expect(categories.assertUsableByOwner).toHaveBeenCalledWith('cat-uuid-1', mockTask.ownerId);
+    });
+
+    it('treats a category change on a COMPLETED task as a detail change', async () => {
+      prisma.task.findFirst.mockResolvedValue({ ...mockTask, status: TaskStatusEnum.COMPLETED });
+
+      await expect(
+        service.update(mockUser, mockTask.id, { categoryId: 'cat-uuid-1' }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });
