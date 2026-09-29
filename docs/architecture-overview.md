@@ -62,6 +62,8 @@ sequenceDiagram
 erDiagram
     UserProfile ||--o{ Session : "possui"
     UserProfile ||--o{ Task : "é proprietário de"
+    UserProfile ||--o{ Category : "é proprietário de"
+    Category |o--o{ Task : "classifica"
 
     UserProfile {
         uuid id PK
@@ -92,11 +94,24 @@ erDiagram
         enum priority "LOW | MEDIUM | HIGH | URGENT"
         datetime dueDate
         uuid ownerId FK
+        uuid categoryId FK "opcional"
+        datetime deletedAt
+        datetime createdAt
+        datetime updatedAt
+    }
+
+    Category {
+        uuid id PK
+        string name "único por dono (case-insensitive)"
+        string color "#RRGGBB"
+        uuid ownerId FK
         datetime deletedAt
         datetime createdAt
         datetime updatedAt
     }
 ```
+
+**Regras da entidade `Category`:** uma tarefa só pode ser vinculada a uma categoria ativa do **mesmo dono da tarefa** (inclusive quando um `ADMIN` edita a tarefa de outro usuário). A remoção de uma categoria é lógica e, na mesma transação, desvincula as tarefas associadas (`categoryId = null`). Alterar a categoria de uma tarefa `COMPLETED` conta como alteração de detalhe e exige reabri-la.
 
 ---
 
@@ -124,6 +139,11 @@ erDiagram
 | `GET` | `/api/v1/tasks/:id` | Sessão | `USER` | Detalhes da tarefa (owner ou admin) |
 | `PUT` | `/api/v1/tasks/:id` | Sessão + CSRF | `USER` | Atualiza tarefa respeitando regras de transição |
 | `DELETE`| `/api/v1/tasks/:id` | Sessão + CSRF | `USER` | Remoção lógica (*soft delete*) da tarefa |
+| `GET` | `/api/v1/categories` | Sessão | `USER` | Lista categorias (ordem alfabética, busca, contagem de tarefas) |
+| `POST` | `/api/v1/categories` | Sessão + CSRF | `USER` | Cria categoria com ownership e nome único por usuário |
+| `GET` | `/api/v1/categories/:id` | Sessão | `USER` | Detalhes da categoria (owner ou admin) |
+| `PUT` | `/api/v1/categories/:id` | Sessão + CSRF | `USER` | Renomeia ou altera a cor da categoria |
+| `DELETE`| `/api/v1/categories/:id` | Sessão + CSRF | `USER` | Remoção lógica da categoria e desvínculo das tarefas |
 
 ---
 
